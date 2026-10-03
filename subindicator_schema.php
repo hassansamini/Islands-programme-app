@@ -1,0 +1,300 @@
+<?php
+declare(strict_types=1);
+
+function ensure_subindicator_schema(): void {
+    try {
+        $pdo = db();
+        $pdo->exec("CREATE TABLE IF NOT EXISTS components (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(30) NOT NULL UNIQUE,
+            name VARCHAR(255) NOT NULL,
+            description TEXT NULL,
+            active TINYINT(1) NOT NULL DEFAULT 1,
+            sort_order INT NOT NULL DEFAULT 0
+        ) ENGINE=InnoDB");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS sub_indicators (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            component_id INT UNSIGNED NOT NULL,
+            code VARCHAR(40) NOT NULL UNIQUE,
+            name VARCHAR(500) NOT NULL,
+            indicator_type VARCHAR(30) NOT NULL DEFAULT 'output',
+            unit VARCHAR(100) DEFAULT NULL,
+            description TEXT NULL,
+            reporting_modality TEXT NULL,
+            active TINYINT(1) NOT NULL DEFAULT 1,
+            sort_order INT NOT NULL DEFAULT 0,
+            FOREIGN KEY (component_id) REFERENCES components(id) ON DELETE RESTRICT
+        ) ENGINE=InnoDB");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS project_sub_indicator_links (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            project_id INT UNSIGNED NOT NULL,
+            sub_indicator_id INT UNSIGNED NOT NULL,
+            geb_indicator_id INT UNSIGNED NULL,
+            project_logframe_reference VARCHAR(500) NULL,
+            mapping_note TEXT NULL,
+            active TINYINT(1) NOT NULL DEFAULT 1,
+            UNIQUE KEY uq_project_sub_geb (project_id,sub_indicator_id,geb_indicator_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (sub_indicator_id) REFERENCES sub_indicators(id) ON DELETE CASCADE,
+            FOREIGN KEY (geb_indicator_id) REFERENCES indicators(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS subindicator_submissions (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            project_id INT UNSIGNED NOT NULL,
+            sub_indicator_id INT UNSIGNED NOT NULL,
+            geb_indicator_id INT UNSIGNED NULL,
+            reporting_year SMALLINT UNSIGNED NOT NULL,
+            country VARCHAR(120) NOT NULL,
+            reported_value DECIMAL(20,4) NULL,
+            unit VARCHAR(100) DEFAULT NULL,
+            result_text TEXT NULL,
+            disaggregation TEXT NULL,
+            data_source TEXT NOT NULL,
+            methodology TEXT NOT NULL,
+            notes TEXT NULL,
+            evidence_path VARCHAR(500) NULL,
+            state VARCHAR(20) NOT NULL DEFAULT 'draft',
+            submitted_by INT UNSIGNED NOT NULL,
+            reviewer_id INT UNSIGNED NULL,
+            approver_id INT UNSIGNED NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            approved_at DATETIME NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id),
+            FOREIGN KEY (sub_indicator_id) REFERENCES sub_indicators(id),
+            FOREIGN KEY (geb_indicator_id) REFERENCES indicators(id) ON DELETE SET NULL,
+            FOREIGN KEY (submitted_by) REFERENCES users(id),
+            FOREIGN KEY (reviewer_id) REFERENCES users(id),
+            FOREIGN KEY (approver_id) REFERENCES users(id)
+        ) ENGINE=InnoDB");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS subindicator_notification_log (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            subindicator_submission_id INT UNSIGNED NOT NULL,
+            recipients TEXT NOT NULL,
+            subject VARCHAR(255) NOT NULL,
+            body TEXT NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'logged',
+            error_message TEXT NULL,
+            sent_at DATETIME NULL,
+            created_at DATETIME NOT NULL,
+            FOREIGN KEY (subindicator_submission_id) REFERENCES subindicator_submissions(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS subindicator_workflow_events (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            subindicator_submission_id INT UNSIGNED NOT NULL,
+            user_id INT UNSIGNED NULL,
+            action VARCHAR(100) NOT NULL,
+            from_state VARCHAR(20) NULL,
+            to_state VARCHAR(20) NULL,
+            note TEXT NULL,
+            created_at DATETIME NOT NULL,
+            FOREIGN KEY (subindicator_submission_id) REFERENCES subindicator_submissions(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB");
+        try { $pdo->exec("ALTER TABLE submissions ADD source_submission_id INT UNSIGNED NULL"); } catch (Throwable $ignored) {}
+        try { $pdo->exec("ALTER TABLE submissions ADD auto_generated TINYINT(1) NOT NULL DEFAULT 0"); } catch (Throwable $ignored) {}
+        try { $pdo->exec("ALTER TABLE submissions ADD INDEX idx_source_submission (source_submission_id)"); } catch (Throwable $ignored) {}
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS geb_beneficiary_categories (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            category_no TINYINT UNSIGNED NOT NULL UNIQUE,
+            name VARCHAR(255) NOT NULL,
+            definition TEXT NOT NULL,
+            examples TEXT NOT NULL,
+            sort_order INT NOT NULL
+        ) ENGINE=InnoDB");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS geb_beneficiary_reports (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            submission_id INT UNSIGNED NOT NULL,
+            category_id INT UNSIGNED NOT NULL,
+            male_count INT UNSIGNED NOT NULL DEFAULT 0,
+            female_count INT UNSIGNED NOT NULL DEFAULT 0,
+            notes TEXT NULL,
+            UNIQUE KEY uq_beneficiary_report (submission_id,category_id),
+            FOREIGN KEY (submission_id) REFERENCES submissions(id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES geb_beneficiary_categories(id) ON DELETE RESTRICT
+        ) ENGINE=InnoDB");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS geb_policy_instruments (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            submission_id INT UNSIGNED NOT NULL,
+            category_code CHAR(1) NOT NULL,
+            category_name VARCHAR(500) NOT NULL,
+            advancement_stage VARCHAR(40) NOT NULL,
+            description TEXT NULL,
+            UNIQUE KEY uq_policy_report (submission_id,category_code),
+            FOREIGN KEY (submission_id) REFERENCES submissions(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB");
+
+        $components = [
+            ['Component 1','Preventing the future build-up of chemicals entering the SIDS','SIDS have in place effective mechanisms to control the import of chemicals and products that lead to the generation of hazardous waste',1],
+            ['Component 2','Safe management and disposal of existing chemicals, products and materials','Harmful chemicals and materials present and/or generated in SIDS are being disposed of in an environmentally sound manner',2],
+            ['Component 3','Safe management of products entering SIDS / closing material and product loop for products','Build-up of harmful materials and chemicals is prevented through effective circular and lifecycle management systems in partnership with the private sector',3],
+            ['Component 4','Knowledge management and communication','Knowledge generated by the programme is disseminated to, and applied by, SIDS in all regions',4],
+        ];
+        $q = $pdo->prepare("INSERT IGNORE INTO components(code,name,description,sort_order) VALUES(?,?,?,?)");
+        foreach ($components as $c) $q->execute($c);
+
+        $subs = [
+            ['Component 1','1.1','Countries Advancing Policies and Regulations to Control Hazardous Chemical Imports','outcome','Countries','Countries with project-supported progress on eligible regulatory or policy instruments.','Select country; select instrument type; select advancement stage; provide a short description.',1],
+            ['Component 1','1.2','Stakeholders Trained on Prevention and Control of Hazardous Chemical Imports','output','Persons','Individuals receiving targeted training, guidance or information.','Report country, sex, beneficiary category and intensity of support.',2],
+            ['Component 2','2.1','Inventories, Assessments and Technical Studies on Hazardous Chemicals and Waste','output','Studies','Inventories, feasibility studies and technical analyses conducted.','Report study type, country, status and evidence.',1],
+            ['Component 2','2.2','Plans, Strategies and Roadmaps for Hazardous Chemicals and Waste Management','output','Plans','Plans, strategies and roadmaps developed with project support.','Report country, instrument/product and advancement/status.',2],
+            ['Component 2','2.3','Technical and Infrastructure Designs for Environmentally Sound Waste Management Systems','output','Designs','Technical and infrastructure designs supporting environmentally sound management.','Report country, design/facility type and status.',3],
+            ['Component 2','2.4','Strengthened Human Capacity for Environmentally Sound Chemicals and Waste Management','output','Persons','Human capacity strengthened through project-supported capacity development.','Report country, beneficiary category, sex and intensity where applicable.',4],
+            ['Component 2','2.5','Operational Facilities Applying Environmentally Sound Hazardous Waste Management Practices','output','Facilities','Operational facilities applying environmentally sound hazardous waste management practices.','Report facility, country, waste stream and status.',5],
+            ['Component 2','2.6','Contaminated Sites Addressed Through Improved Waste and Chemicals Management Systems','output','Sites','Contaminated sites addressed through improved management systems.','Report country/site and intervention status.',6],
+            ['Component 3','3.1','Waste Transfer and Storage Facilities Supporting Recycling and Material Recovery','output','Facilities','Waste transfer/storage facilities supporting material recovery or recycling.','Report country, facility type and status.',1],
+            ['Component 3','3.2','Measures Implemented for Waste Segregation and Material Recovery','output','Measures','Source segregation, decoupling or material separation measures implemented or strengthened.','Report country, waste stream and measure/status.',2],
+            ['Component 3','3.3','Financial Incentives and Circular Economy Mechanisms for Priority Waste Streams','output','Mechanisms','Financial incentives and circular-economy mechanisms established for priority waste streams.','Report country, mechanism type and status.',3],
+            ['Component 3','3.4','Private Sector Recycling and Sustainable Waste Management Initiatives','output','Initiatives','Private-sector recycling and sustainable waste-management initiatives supported.','Report enterprise/country, initiative type and status.',4],
+            ['Component 3','3.5','Tourism and Cruise Industry Commitments to Reduce Hazardous Waste and Chemical Emissions','output','Commitments','Tourism/cruise commitments addressing hazardous waste and chemical emissions.','Report partner/country and commitment status.',5],
+            ['Component 3','3.6','Ports with Improved Management Systems for Cruise Ship Hazardous Waste','output','Ports','Ports with improved hazardous-waste management systems for cruise operations.','Report port/country and system status.',6],
+            ['Component 3','3.7','Destinations Linking Cruise Ship Waste to Local Recovery and Recycling Systems','output','Destinations','Destinations linking cruise-ship waste to local recovery and recycling systems.','Report destination/country and linkage status.',7],
+            ['Component 3','3.8','Capacity Building on Circular Economy and Lifecycle Management Approaches','output','Persons','Capacity-building activities on circular economy and lifecycle management.','Report country, beneficiary category, sex and intensity where applicable.',8],
+            ['Component 4','4.1','ISLANDS Knowledge and Communication Products Developed and Shared','output','Products','Knowledge and communication products developed and disseminated.','Report product type, country/region and dissemination evidence.',1],
+            ['Component 4','4.1.1','Knowledge Products Incorporating Gender-Sensitive Quality Standards','output','Products','Knowledge products incorporating gender-sensitive quality standards.','Report product and gender-sensitive quality criterion.',2],
+            ['Component 4','4.2','Partners Engaged in Knowledge Sharing and ISLANDS Learning Networks','output','Partners','Partners engaged in knowledge-sharing and learning networks.','Report partner/country and engagement type.',3],
+            ['Component 4','4.3','Utilization of ISLANDS Knowledge Platforms and Resources','outcome','Users','Use of ISLANDS knowledge platforms and resources.','Report platform/resource and usage evidence.',4],
+            ['Component 4','4.4','Knowledge Exchange, Learning and Capacity-Building Activities Delivered','output','Activities','Knowledge exchange, learning and capacity-building activities delivered.','Report activity, country/region and participant information.',5],
+            ['Component 4','4.5','Improved Capacity, Confidence and Intent to Apply Chemicals and Waste Solutions','outcome','Persons','Change in capacity, confidence and intent among supported participants.','Report assessment method, population and result.',6],
+            ['Component 4','4.6','Replication and Scaling of Circular Economy and Chemicals Management Solutions','outcome','Initiatives','Replication and scaling of circular economy and chemicals-management solutions.','Report solution, country and replication status.',7],
+            ['Component 4','4.7','ISLANDS Knowledge Influencing Regional and Global Cooperation Processes','outcome','Processes','Knowledge from ISLANDS influencing regional/global cooperation processes.','Report process, forum and evidence of influence.',8],
+        ];
+        // The first V2 build used the component's long human-readable name as
+        // the lookup key. The catalogue definitions use the component code
+        // (Component 1, Component 2, ...). Resolve by code and repair rows
+        // on every bootstrap so the catalogue cannot silently remain empty.
+        $cm = [];
+        foreach ($pdo->query('SELECT id,code FROM components') as $r) $cm[(string)$r['code']] = (int)$r['id'];
+        $insertSub = $pdo->prepare("INSERT INTO sub_indicators(component_id,code,name,indicator_type,unit,description,reporting_modality,sort_order,active) VALUES(?,?,?,?,?,?,?,?,1) ON DUPLICATE KEY UPDATE component_id=VALUES(component_id),name=VALUES(name),indicator_type=VALUES(indicator_type),unit=VALUES(unit),description=VALUES(description),reporting_modality=VALUES(reporting_modality),sort_order=VALUES(sort_order),active=1");
+        foreach ($subs as $r) {
+            if (!isset($cm[$r[0]])) continue;
+            $insertSub->execute([$cm[$r[0]],$r[1],$r[2],$r[3],$r[4],$r[5],$r[6],$r[7]]);
+        }
+
+        $cats = [
+            [1,'Government policy, legal and technical personnel','Public-sector personnel responsible for policy, regulation, standards or technical planning for chemicals and waste','Ministries, MEA focal points, legal experts, standards agencies'],
+            [2,'Enforcement, customs and border-control personnel','Personnel responsible for controlling imports, inspections and regulatory compliance','Customs officers, port/border inspectors, environmental enforcement officers'],
+            [3,'Chemicals and waste-management practitioners','People directly involved in collection, handling, segregation, storage, dismantling, treatment, recycling or disposal','WEEE/ELV operators, recyclers, hazardous-waste handlers, used-oil operators, healthcare-waste staff'],
+            [4,'Private-sector and value-chain actors','Businesses and sector representatives whose decisions affect product inflows, take-back, financing, circularity or ESM','Importers, producers, retailers, tourism operators, cruise/shipping companies'],
+            [5,'Technical professionals and trainers','Specialists providing or receiving advanced technical support, or responsible for cascading knowledge','Engineers, laboratory personnel, consultants, national experts, trainers-of-trainers'],
+            [6,'Workers and occupationally exposed groups','Workers directly targeted by interventions intended to reduce occupational exposure or unsafe practices','Waste pickers, agricultural workers, healthcare workers, informal recyclers, ASGM miners'],
+            [7,'Community, consumer and youth participants','Members of the public directly participating in structured, project-supported training, education or behaviour-change activities','Community participants, students, youth programme participants, consumers'],
+        ];
+        $q = $pdo->prepare("INSERT IGNORE INTO geb_beneficiary_categories(category_no,name,definition,examples,sort_order) VALUES(?,?,?,?,?)");
+        foreach ($cats as $c) $q->execute($c);
+
+        $mapping = [
+            '1.1'=>['10279'=>'O1.1','10472'=>'O1.1','10848'=>'O1.1','10261'=>'O.I.2','10258'=>'O1.1/1.2','10267'=>'O.1.2/O.1.1'],
+            '1.2'=>['10279'=>'O1.1','10472'=>'O1.1','10848'=>'O1.1','10261'=>'O.I.2','10258'=>'O1.1/1.2','10267'=>'O.1.2/O.1.1'],
+            '2.1'=>['10267'=>'O2.2.1/2.3.1','10279'=>'O2.2 – Activity 2.2.3','10472'=>'O2.1 – 2.1.1','10261'=>'O2.1','10848'=>'O2.1 – activity 2.1.1','10258'=>'O2.1'],
+            '2.2'=>['10267'=>'PPP strategy under O2.1','10279'=>'O2.1/O2.2','10472'=>'O2.1/O2.2','10261'=>'O2.2','10848'=>'O2.1/O2.2.1','10258'=>'O2.1'],
+            '2.3'=>['10267'=>'O2.4.2','10848'=>'O2.2 – Activity 2.2.4','10258'=>'O2.4'],
+            '2.4'=>['10267'=>'O2.2','10279'=>'O2.1/O2.2','10472'=>'O2.1/O2.2','10261'=>'Activity 2.4.5/2.4.12','10848'=>'O2.2 – Activity 2.2.2'],
+            '2.5'=>['10279'=>'O2.1 – Activity 2.1.2','10472'=>'O2.1/O2.2','10261'=>'O2.4','10848'=>'O2.1/O2.2'],
+            '2.6'=>['10261'=>'O2.1/O2.3.1'],
+            '3.1'=>['10267'=>'O3.2/O3.3','10261'=>'Ind.10'],
+            '3.2'=>['10267'=>'O3.2, Ind.20','10279'=>'O3.3','10472'=>'O3.3/O2.2','10261'=>'Activity 2.4.5/2.4.12','10848'=>'O2.2, Ind.5'],
+            '3.3'=>['10267'=>'O1.1','10279'=>'O3.1','10472'=>'O3.1','10261'=>'Ind.12','10258'=>'indirect – O3.1–3.8/4.1–4.3'],
+            '3.4'=>['10279'=>'O3.3, Activity 3.3.1','10472'=>'O3.3, Activity 3.3.1','10261'=>'O3.3, Activity 3.1.2','10848'=>'O3.3, Activity 3.3.1/3.3.2/3.3.3'],
+            '3.5'=>['10261'=>'Ind.11','10848'=>'O3.3','10266'=>'cruise partnership'],
+            '3.6'=>['10266'=>'cruise ports','10472'=>'O3.3','10279'=>'O3.3 + Activity 3.3.1','10848'=>'O3.3'],
+            '3.7'=>['10279'=>'O3.3, Activity 3.3.1','10472'=>'O3.3, Activity 3.3.1','10261'=>'O3.3, Activity 3.1.2','10848'=>'O3.3, Activity 3.3.1/3.3.2/3.3.3'],
+            '3.8'=>['10267'=>'O2.2/O3.1/O3.4/O4.2-4.3','10279'=>'O2.2/O3.2/O4.1','10472'=>'O2.2/O3.2/O4.1','10261'=>'Ind.7/13/14','10848'=>'O2.2/O3.1/O3.2/O3.3/O4.1','10258'=>'O5.1/5.2/5.3'],
+            '4.1'=>['10267'=>'knowledge products','10279'=>'knowledge products','10472'=>'knowledge products','10261'=>'knowledge products','10258'=>'knowledge products','10848'=>'knowledge products'],
+            '4.1.1'=>['10279'=>'O4.1','10261'=>'Outcome 4 – Ind.13/14','10258'=>'Comp.5.3/5.4','10266'=>'Comp.2-2.1'],
+            '4.2'=>['10267'=>'All child projects','10279'=>'All child projects','10472'=>'All child projects','10261'=>'All child projects','10848'=>'All child projects','10258'=>'All child projects'],
+            '4.3'=>['10266'=>'knowledge platform'],
+            '4.4'=>['10267'=>'All child projects','10279'=>'All child projects','10472'=>'All child projects','10261'=>'All child projects','10848'=>'All child projects','10258'=>'All child projects'],
+            '4.5'=>['10267'=>'CCKM-led in coordination with regional child projects','10279'=>'CCKM-led in coordination with regional child projects','10472'=>'CCKM-led in coordination with regional child projects','10261'=>'CCKM-led in coordination with regional child projects','10848'=>'CCKM-led in coordination with regional child projects','10258'=>'CCKM-led in coordination with regional child projects'],
+            '4.6'=>['10266'=>'CCKM-led replication/scaling'],
+            '4.7'=>['10267'=>'All child projects','10279'=>'All child projects','10472'=>'All child projects','10261'=>'All child projects','10848'=>'All child projects','10258'=>'All child projects'],
+        ];
+        $gebAssoc = [
+            '1.1'=>['GEF #9.4','GEF #10.1'],'1.2'=>['GEF #11'],
+            '2.1'=>['GEF #9','GEF #9.1','GEF #9.2'],'2.2'=>['GEF #9.4','GEF #9.5'],'2.3'=>['GEF #9.5'],'2.4'=>['GEF #11'],
+            '2.5'=>['GEF #9','GEF #9.1','GEF #9.2'],'2.6'=>['GEF #9','GEF #9.1','GEF #9.2'],
+            '3.1'=>['GEF #5.3','GEF #9'],'3.2'=>['GEF #5.3','GEF #9'],'3.3'=>['GEF #9.6','GEF #5.3'],
+            '3.4'=>['GEF #9.6','GEF #5.3'],'3.5'=>['GEF #10','GEF #10.1'],'3.6'=>['GEF #10.2','GEF #5.3'],
+            '3.7'=>['GEF #5.3','GEF #9.6'],'3.8'=>['GEF #11'],
+            '4.1'=>['GEF #11'],'4.1.1'=>['GEF #11'],'4.2'=>['GEF #11'],'4.3'=>['GEF #11'],'4.4'=>['GEF #11'],'4.5'=>['GEF #11'],'4.6'=>['GEF #11'],'4.7'=>['GEF #11']
+        ];
+        $subrows=[]; foreach($pdo->query('SELECT id,code FROM sub_indicators') as $r)$subrows[$r['code']]=(int)$r['id'];
+        $projrows=[]; foreach($pdo->query('SELECT id,project_code FROM projects') as $r)$projrows[$r['project_code']]=(int)$r['id'];
+        $gebids=[]; foreach($pdo->query('SELECT id,code FROM indicators') as $r)$gebids[$r['code']]=(int)$r['id'];
+        // Seed the project attribution independently of the optional GEB link.
+        // This relationship drives Project -> Component -> Sub-indicator in the form.
+        $qGeb=$pdo->prepare("INSERT INTO project_sub_indicator_links(project_id,sub_indicator_id,geb_indicator_id,project_logframe_reference,mapping_note,active) VALUES(?,?,?,?,?,1) ON DUPLICATE KEY UPDATE project_logframe_reference=VALUES(project_logframe_reference),mapping_note=VALUES(mapping_note),active=1");
+        $qNoGebFind=$pdo->prepare("SELECT id FROM project_sub_indicator_links WHERE project_id=? AND sub_indicator_id=? AND geb_indicator_id IS NULL LIMIT 1");
+        $qNoGebUpdate=$pdo->prepare("UPDATE project_sub_indicator_links SET project_logframe_reference=?,mapping_note=?,active=1 WHERE id=?");
+        $qNoGebInsert=$pdo->prepare("INSERT INTO project_sub_indicator_links(project_id,sub_indicator_id,geb_indicator_id,project_logframe_reference,mapping_note,active) VALUES(?,?,?,?,?,1)");
+        foreach($mapping as $scode=>$projects){
+            foreach($projects as $pcode=>$reference){
+                if(!isset($projrows[$pcode]) || !isset($subrows[$scode])) continue;
+                $assoc=$gebAssoc[$scode]??[];
+                $inserted=false;
+                foreach($assoc as $gcode){
+                    if(!isset($gebids[$gcode])) continue;
+                    $qGeb->execute([$projrows[$pcode],$subrows[$scode],$gebids[$gcode],$reference,'Framework contribution mapping; GEB association is a guided programme linkage and remains reviewable.']);
+                    $inserted=true;
+                }
+                if(!$inserted){
+                    $qNoGebFind->execute([$projrows[$pcode],$subrows[$scode]]);
+                    $existingLink=$qNoGebFind->fetchColumn();
+                    if($existingLink){
+                        $qNoGebUpdate->execute([$reference,'Framework project contribution mapping; no direct GEB association specified.',(int)$existingLink]);
+                    } else {
+                        $qNoGebInsert->execute([$projrows[$pcode],$subrows[$scode],null,$reference,'Framework project contribution mapping; no direct GEB association specified.']);
+                    }
+                }
+            }
+        }
+    } catch (Throwable $ignored) {
+        // Existing GEB functions remain available if the extension schema cannot be created yet.
+    }
+}
+
+function save_beneficiary_breakdown(int $submissionId, array $categories, array $maleInput, array $femaleInput, PDO $pdo): void {
+    $pdo->prepare("DELETE FROM geb_beneficiary_reports WHERE submission_id=?")->execute([$submissionId]);
+    $q=$pdo->prepare("INSERT INTO geb_beneficiary_reports(submission_id,category_id,male_count,female_count,notes) VALUES(?,?,?,?,?)");
+    foreach($categories as $c){$cid=(int)$c['id'];$m=max(0,(int)($maleInput[$cid]??0));$f=max(0,(int)($femaleInput[$cid]??0));$q->execute([$submissionId,$cid,$m,$f,null]);}
+}
+function save_policy_instruments(int $submissionId, array $categories, array $stages, array $descriptions, PDO $pdo): void {
+    $pdo->prepare("DELETE FROM geb_policy_instruments WHERE submission_id=?")->execute([$submissionId]);
+    $q=$pdo->prepare("INSERT INTO geb_policy_instruments(submission_id,category_code,category_name,advancement_stage,description) VALUES(?,?,?,?,?)");
+    foreach($categories as [$code,$name]){ $stage=trim((string)($stages[$code]??''));$desc=trim((string)($descriptions[$code]??''));if($stage!==''||$desc!=='')$q->execute([$submissionId,$code,$name,$stage?:'not_reported',$desc?:null]); }
+}
+
+function sync_geb11_derived_records(int $parentSubmissionId): void {
+    try {
+        $pdo=db();
+        $st=$pdo->prepare("SELECT s.*,i.code indicator_code,p.project_code FROM submissions s JOIN indicators i ON i.id=s.indicator_id JOIN projects p ON p.id=s.project_id WHERE s.id=?");$st->execute([$parentSubmissionId]);$parent=$st->fetch();
+        if(!$parent || $parent['indicator_code']!=='GEF #11') return;
+        $ids=[];foreach($pdo->query("SELECT code,id FROM indicators WHERE code IN ('GEF #11.1','GEF #11.2')") as $r)$ids[$r['code']]=(int)$r['id'];
+        $sum=$pdo->prepare("SELECT COALESCE(SUM(male_count),0),COALESCE(SUM(female_count),0) FROM geb_beneficiary_reports WHERE submission_id=?");$sum->execute([$parentSubmissionId]);[$male,$female]=$sum->fetch(PDO::FETCH_NUM);$male=(float)$male;$female=(float)$female;
+        $derived=[['GEF #11.1',$male,'Male beneficiaries derived from GEF #11 category breakdown.'],['GEF #11.2',$female,'Female beneficiaries derived from GEF #11 category breakdown.']];
+        foreach($derived as [$code,$value,$note]){
+            if(!isset($ids[$code])) continue;
+            $find=$pdo->prepare("SELECT id FROM submissions WHERE source_submission_id=? AND indicator_id=? LIMIT 1");$find->execute([$parentSubmissionId,$ids[$code]]);$cid=(int)$find->fetchColumn();
+            $dis=json_encode(['derived_from_submission'=>$parentSubmissionId,'sex'=>$code==='GEF #11.1'?'male':'female'],JSON_UNESCAPED_UNICODE);
+            if($cid){$q=$pdo->prepare("UPDATE submissions SET project_id=?,reporting_year=?,country=?,reported_value=?,unit='People',disaggregation=?,data_source=?,methodology=?,notes=?,state=?,reviewer_id=?,approver_id=?,updated_at=NOW(),approved_at=? WHERE id=?");$q->execute([$parent['project_id'],$parent['reporting_year'],$parent['country'],$value,$dis,'Auto-derived from GEF #11 beneficiary category table.',$note,'Derived record; do not edit directly.',$parent['state'],$parent['reviewer_id'],$parent['approver_id'],$parent['approved_at'],$cid]);}
+            else{$q=$pdo->prepare("INSERT INTO submissions (project_id,reporting_year,indicator_id,country,reported_value,unit,disaggregation,data_source,methodology,notes,state,submitted_by,reviewer_id,approver_id,created_at,updated_at,approved_at,source_submission_id,auto_generated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)");$q->execute([$parent['project_id'],$parent['reporting_year'],$ids[$code],$parent['country'],$value,'People',$dis,'Auto-derived from GEF #11 beneficiary category table.',$note,'Derived record; do not edit directly.',$parent['state'],$parent['submitted_by'],$parent['reviewer_id'],$parent['approver_id'],$parent['created_at'],date('Y-m-d H:i:s'),$parent['approved_at'],$parentSubmissionId]);}
+        }
+    } catch(Throwable $ignored){}
+}
+
+function notify_subindicator_assignment(array $record, string $assignmentType, ?string $recipient): array {
+    if (!$recipient || !filter_var($recipient, FILTER_VALIDATE_EMAIL)) return ['sent'=>false,'error'=>'No valid recipient email address is assigned.'];
+    $label=$assignmentType==='reviewer'?'Reviewer':'Approver';
+    $subject=APP_NAME.': Sub-indicator '.$label.' assignment — '.($record['project_code']??'Project').' / '.($record['sub_code']??'Sub-indicator');
+    $publicUrl=rtrim((string)email_settings()['public_url'],'/').'/subindicator.php?id='.(int)$record['id'];
+    $body="Dear ISLANDS Programme colleague,\n\nYou have been assigned as the {$label} for a component/sub-indicator reporting record.\n\nProject: ".($record['project_code']??'—')."\nSub-indicator: ".($record['sub_code']??'—')."\nLinked GEB: ".($record['geb_code']??'—')."\nCountry: ".($record['country']??'—')."\nReporting year: ".($record['reporting_year']??'—')."\nCurrent status: ".workflow_label((string)($record['state']??'draft'))."\n\nOpen the record: {$publicUrl}\n\nThis is an automated notification from the ISLANDS GEB Portal.\n";
+    $mail=smtp_send([strtolower(trim($recipient))],$subject,$body);$status=$mail['ok']?'sent':'failed';
+    try{$q=db()->prepare("INSERT INTO subindicator_notification_log(subindicator_submission_id,recipients,subject,body,status,error_message,sent_at,created_at) VALUES(?,?,?,?,?,?,?,NOW())");$q->execute([(int)$record['id'],strtolower(trim($recipient)),$subject,$body,$status,$mail['error']?:null,$mail['ok']?date('Y-m-d H:i:s'):null]);}catch(Throwable $ignored){}
+    return ['sent'=>$mail['ok'],'error'=>$mail['error']??''];
+}
+
+function subindicator_audit(int $id, ?int $userId, string $action, ?string $from, ?string $to, string $note=''): void {
+    $q = db()->prepare("INSERT INTO subindicator_workflow_events (subindicator_submission_id,user_id,action,from_state,to_state,note,created_at) VALUES (?,?,?,?,?,?,NOW())");
+    $q->execute([$id,$userId,$action,$from,$to,$note]);
+}

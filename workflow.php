@@ -1,0 +1,125 @@
+<?php
+require_once __DIR__ . '/bootstrap.php';
+$u = require_login();
+$pdo = db();
+
+$rows = $pdo->query("
+    SELECT s.id, s.state, p.project_code, p.project_name, i.code indicator_code,
+           u.name submitter, r.name reviewer, a.name approver, s.updated_at
+    FROM submissions s
+    JOIN projects p ON p.id=s.project_id
+    JOIN indicators i ON i.id=s.indicator_id
+    LEFT JOIN users u ON u.id=s.submitted_by
+    LEFT JOIN users r ON r.id=s.reviewer_id
+    LEFT JOIN users a ON a.id=s.approver_id
+    ORDER BY s.updated_at DESC
+")->fetchAll();
+
+$groups = ['draft'=>[], 'review'=>[], 'approval'=>[], 'approved'=>[]];
+foreach ($rows as $r) {
+    if (isset($groups[$r['state']])) $groups[$r['state']][] = $r;
+}
+
+function workflow_button(int $id, string $target, string $label, string $class='primary'): string {
+    return '<form method="POST" action="workflow_action.php" class="workflow-action-form">'
+        . '<input type="hidden" name="csrf" value="' . e(csrf_token()) . '">'
+        . '<input type="hidden" name="action" value="move_to">'
+        . '<input type="hidden" name="target_state" value="' . e($target) . '">'
+        . '<input type="hidden" name="submission_id" value="' . $id . '">'
+        . '<button type="submit" class="btn small ' . e($class) . '">' . e($label) . '</button>'
+        . '</form>';
+}
+
+$columns = [
+    ['draft','DRAFT','Data capture'],
+    ['review','REVIEW','Quality assurance'],
+    ['approval','APPROVAL','Final verification'],
+    ['approved','COMPLETED','Verified record'],
+];
+$buttonMap = [
+    'draft' => [
+        ['review','Move to Review','primary'],
+        ['approval','Move to Approval','secondary'],
+        ['approved','Move to Completed','success'],
+    ],
+    'review' => [
+        ['draft','Move to Draft','secondary'],
+        ['approval','Move to Approval','primary'],
+        ['approved','Move to Completed','success'],
+    ],
+    'approval' => [
+        ['draft','Move to Draft','secondary'],
+        ['review','Move to Review','secondary'],
+        ['approved','Move to Completed','success'],
+    ],
+    'approved' => [
+        ['draft','Move to Draft','secondary'],
+        ['review','Move to Review','secondary'],
+        ['approval','Move to Approval','secondary'],
+    ],
+];
+?>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Workflow | ISLANDS</title>
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="app-shell">
+<?php include __DIR__.'/partials/sidebar.php'; ?>
+<main class="main">
+<header class="topbar">
+  <div>
+    <div class="eyebrow">GOVERNANCE</div>
+    <h1>Workflow workspace</h1>
+    <p class="muted">Route any GEB submission to Draft, Review, Approval or Completed.</p>
+  </div>
+  <a class="btn primary" href="submission.php">+ New submission</a>
+</header>
+
+<div class="workflow-legend">
+  <span>Draft</span><b>→</b><span>Review</span><b>→</b><span>Approval</span><b>→</b><span>Completed</span>
+  <span style="margin-left:10px">|</span><strong>Any phase can be selected.</strong>
+</div>
+
+<section class="workflow-board workflow-board-4">
+<?php foreach ($columns as [$state,$title,$desc]): ?>
+  <div class="board-col <?=e($state)?>">
+    <div class="board-head">
+      <div><span><?=e($title)?></span><small><?=e($desc)?></small></div>
+      <strong><?=count($groups[$state])?></strong>
+    </div>
+
+    <?php foreach ($groups[$state] as $r): ?>
+      <article class="work-card">
+        <a class="work-card-main" href="submission.php?id=<?=$r['id']?>">
+          <span class="code"><?=e($r['project_code'])?></span>
+          <h3><?=e($r['indicator_code'])?></h3>
+          <p><?=e($r['project_name'])?></p>
+          <small>Submitter: <?=e($r['submitter'] ?? '—')?></small>
+          <?php if (!empty($r['reviewer'])): ?><small>Reviewer: <?=e($r['reviewer'])?></small><?php endif; ?>
+          <?php if (!empty($r['approver'])): ?><small>Approver: <?=e($r['approver'])?></small><?php endif; ?>
+        </a>
+
+        <div class="card-actions">
+          <a class="btn small ghost" href="submission.php?id=<?=$r['id']?>">Open record</a>
+          <?php foreach ($buttonMap[$state] as [$target,$label,$class]): ?>
+            <?=workflow_button((int)$r['id'],$target,$label,$class)?>
+          <?php endforeach; ?>
+        </div>
+      </article>
+    <?php endforeach; ?>
+
+    <?php if (!$groups[$state]): ?>
+      <div class="empty">No records in this stage.</div>
+    <?php endif; ?>
+  </div>
+<?php endforeach; ?>
+</section>
+</main>
+</div>
+</body>
+</html>

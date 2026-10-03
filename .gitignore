@@ -1,0 +1,10 @@
+/vendor/
+/node_modules/
+/sites/default/files/
+/sites/default/private/
+/sites/default/settings.php
+/sites/default/services.yml
+/.env
+*.log
+.DS_Store
+Thumbs.db

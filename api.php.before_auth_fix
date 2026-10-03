@@ -1,0 +1,111 @@
+<?php
+declare(strict_types=1);
+/**
+ * ISLANDS GEB Portal JSON API
+ * Authentication: Authorization: Bearer <API_KEY>
+ * Default dataset: Completed/approved records only.
+ */
+require_once __DIR__ . '/bootstrap.php';
+
+// API responses must never redirect to the HTML login page.
+header('Content-Type: application/json; charset=utf-8');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Headers: Authorization, Content-Type');
+header('Access-Control-Allow-Methods: GET, OPTIONS');
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') { http_response_code(204); exit; }
+
+function api_error(int $code, string $message, array $extra=[]): never {
+    http_response_code($code);
+    echo json_encode(array_merge(['success'=>false,'error'=>$message], $extra), JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT);
+    exit;
+}
+
+$auth = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? '');
+if (!preg_match('/^Bearer\\s+(.+)$/i', trim($auth), $m)) {
+    $provided = (string)($_GET['api_key'] ?? '');
+} else {
+    $provided = trim($m[1]);
+}
+if ($provided === '') api_error(401, 'Missing API key. Use Authorization: Bearer <API_KEY>.');
+
+$hash = hash('sha256', $provided);
+$st = db()->prepare('SELECT id, user_id FROM api_tokens WHERE token_hash=? AND active=1 LIMIT 1');
+$st->execute([$hash]);
+$token = $st->fetch();
+if (!$token) api_error(401, 'Invalid or inactive API key.');
+try { db()->prepare('UPDATE api_tokens SET last_used_at=NOW() WHERE id=?')->execute([(int)$token['id']]); } catch (Throwable $ignored) {}
+
+$q = trim((string)($_GET['q'] ?? ''));
+$state = strtolower(trim((string)($_GET['state'] ?? 'approved')));
+$year = trim((string)($_GET['year'] ?? ''));
+$project = trim((string)($_GET['project'] ?? ''));
+$indicator = trim((string)($_GET['indicator'] ?? ''));
+$country = trim((string)($_GET['country'] ?? ''));
+$page = max(1, (int)($_GET['page'] ?? 1));
+$perPage = min(500, max(1, (int)($_GET['per_page'] ?? 100)));
+
+$where=[]; $args=[];
+if ($state !== 'all') {
+    if (!in_array($state, ['draft','review','approval','approved'], true)) api_error(400, 'Invalid state. Use draft, review, approval, approved, or all.');
+    $where[]='s.state=?'; $args[]=$state;
+}
+if ($q !== '') {
+    $where[]='(p.project_code LIKE ? OR p.project_name LIKE ? OR i.code LIKE ? OR i.name LIKE ? OR s.country LIKE ? OR su.name LIKE ?)';
+    for($i=0;$i<6;$i++) $args[]="%{$q}%";
+}
+if ($year !== '') {
+    if (!ctype_digit($year)) api_error(400, 'Year must be numeric.');
+    $where[]='s.reporting_year=?'; $args[]=(int)$year;
+}
+if ($project !== '') { $where[]='p.project_code=?'; $args[]=$project; }
+if ($indicator !== '') { $where[]='i.code=?'; $args[]=$indicator; }
+if ($country !== '') { $where[]='s.country=?'; $args[]=$country; }
+
+$base="FROM submissions s
+JOIN projects p ON p.id=s.project_id
+JOIN indicators i ON i.id=s.indicator_id
+JOIN users su ON su.id=s.submitted_by
+LEFT JOIN users r ON r.id=s.reviewer_id
+LEFT JOIN users a ON a.id=s.approver_id";
+$whereSql=$where ? ' WHERE '.implode(' AND ',$where) : '';
+$countSt=db()->prepare('SELECT COUNT(*) '.$base.$whereSql); $countSt->execute($args); $total=(int)$countSt->fetchColumn();
+$offset=($page-1)*$perPage;
+
+$sql="SELECT
+ s.id, p.project_code, p.project_name, p.region, p.countries AS project_countries,
+ i.code AS indicator_code, i.name AS indicator_name, i.level AS indicator_level, i.unit AS indicator_catalogue_unit,
+ s.reporting_year, s.country, s.reported_value, s.unit, s.disaggregation, s.data_source, s.methodology, s.notes,
+ s.evidence_path, s.state,
+ su.name AS submitter, su.username AS submitter_username, su.email AS submitter_email,
+ r.name AS reviewer, r.username AS reviewer_username, r.email AS reviewer_email,
+ a.name AS approver, a.username AS approver_username, a.email AS approver_email,
+ s.created_at, s.updated_at, s.approved_at
+ ".$base.$whereSql." ORDER BY s.updated_at DESC, s.id DESC LIMIT ? OFFSET ?";
+$st=db()->prepare($sql); $bind=$args; $bind[]=$perPage; $bind[]=$offset; $st->execute($bind); $rows=$st->fetchAll();
+
+$data=[];
+foreach($rows as $r){
+    $data[]=[
+      'id'=>(int)$r['id'],
+      'project'=>['code'=>$r['project_code'],'name'=>$r['project_name'],'region'=>$r['region'],'countries'=>$r['project_countries']],
+      'indicator'=>['code'=>$r['indicator_code'],'name'=>$r['indicator_name'],'level'=>$r['indicator_level'],'catalogue_unit'=>$r['indicator_catalogue_unit']],
+      'reporting'=>['year'=>(int)$r['reporting_year'],'country'=>$r['country'],'value'=>(float)$r['reported_value'],'unit'=>$r['unit'],'disaggregation'=>$r['disaggregation']],
+      'evidence'=>['data_source'=>$r['data_source'],'methodology'=>$r['methodology'],'notes'=>$r['notes'],'evidence_path'=>$r['evidence_path']],
+      'workflow'=>['state'=>$r['state'],'label'=>workflow_label((string)$r['state'])],
+      'people'=>[
+        'submitter'=>['name'=>$r['submitter'],'username'=>$r['submitter_username'],'email'=>$r['submitter_email']],
+        'reviewer'=>$r['reviewer'] ? ['name'=>$r['reviewer'],'username'=>$r['reviewer_username'],'email'=>$r['reviewer_email']] : null,
+        'approver'=>$r['approver'] ? ['name'=>$r['approver'],'username'=>$r['approver_username'],'email'=>$r['approver_email']] : null,
+      ],
+      'timestamps'=>['created_at'=>$r['created_at'],'updated_at'=>$r['updated_at'],'approved_at'=>$r['approved_at']]
+    ];
+}
+
+echo json_encode([
+ 'success'=>true,
+ 'api_version'=>'1.0',
+ 'dataset'=>'ISLANDS GEB submissions',
+ 'filters'=>['q'=>$q,'state'=>$state,'year'=>$year,'project'=>$project,'indicator'=>$indicator,'country'=>$country],
+ 'pagination'=>['page'=>$page,'per_page'=>$perPage,'total'=>$total,'pages'=>$total ? (int)ceil($total/$perPage) : 0],
+ 'data'=>$data
+], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT);
